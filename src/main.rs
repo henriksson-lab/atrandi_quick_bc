@@ -1,4 +1,5 @@
 
+use itertools::Itertools;
 use log::{error, debug}; //, info, trace, warn
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -342,8 +343,83 @@ fn parse_to_fastq(
 
 
 
+/////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////// Generate count table //////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////
 
 
+
+fn bam_to_counttable(ibam:&PathBuf, path_csv:&PathBuf) {
+
+//    let mut barcode_per_cell_count = HashMap::new();
+
+    let mut barcode_per_cell_count: HashMap<String, HashMap<String,i32>> = HashMap::new();
+
+
+    use noodles::bam;
+    use bstr::ByteSlice;
+
+
+    let mut reader = bam::io::reader::Builder::default().build_from_path(ibam).expect("Could not read BAM file");
+    let header = reader.read_header().expect("Could not read BAM header");
+
+
+    //Set up a list of features
+    let allind: Vec<usize> = (0..header.reference_sequences().len()).collect();
+    let name_of_features = allind.iter().map(|i| header.reference_sequences().get_index(*i).expect("!").0.to_string()).collect_vec();
+
+    //Perform all the counting
+    for result in reader.records() {
+        let record = result.expect("Could not read BAM record");
+
+
+        //Get the barcode
+        let name = record.name().unwrap().to_str_lossy();
+        let (bc,_) = name.split_once('_').expect("BAM record name does not follow convention");
+
+        //Get position ; currently a feature_name. replace with ID as cheaper!
+        let seqid = record.reference_sequence_id();
+
+        let feature_name = match seqid {
+            Some(seqid) => {
+                let feature_name = header.reference_sequences().get_index(seqid.expect("huh")).expect("bad ref").0.to_str_lossy();
+                String::from(feature_name)
+            },
+            None => {
+                println!("here");
+                String::from("")
+            }
+        };
+
+
+        //println!("{:?}",header.reference_sequences().get_index(seqid));
+
+        //println!("{}",bc);
+
+        //Update count in table.
+        barcode_per_cell_count.entry(bc.to_string())
+        .and_modify(|cellmap| { 
+             (*cellmap).insert(feature_name.clone(), 1);
+        })
+        .or_insert({
+            let mut cellmap = HashMap::new();
+            cellmap.insert(feature_name.clone(), 1);
+            cellmap
+        });
+        
+    }
+
+
+    println!("{:?}", barcode_per_cell_count);
+
+
+
+    store_counttable(path_csv, name_of_features);
+
+}
+
+
+use quick_bc::countfile::store_counttable;
 
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -385,6 +461,15 @@ enum Commands {
         #[arg(long)]
         h: PathBuf
 
+    },
+    BamToCount {
+        /// Bam input file
+        #[arg(short,long)]
+        ibam: PathBuf,
+
+        /// Count file
+        #[arg(short,long)]
+        out: PathBuf
     }    
 }
 
@@ -403,6 +488,12 @@ fn main() {
                 &h
             );
         }
+        Some(Commands::BamToCount { ibam, out}) => {
+            bam_to_counttable(
+                &ibam, &out
+            );
+        }
+        
         None => {}
     }
 
