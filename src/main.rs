@@ -301,7 +301,7 @@ fn parse_to_fastq(
                 let new_r2_name = format!("{}_{}",&concat_bc, record_r2.id().unwrap());
 
                 let from: usize = 36+8;
-                let to = record_r1.seq().len();
+                let to = record_r2.seq().len();
                 let from = if from<to {from} else {to}; //to be on the safe side
                 let new_r2_seq = &record_r2.seq()[from..to];
                 let new_r2_qual = &record_r2.qual()[from..to];
