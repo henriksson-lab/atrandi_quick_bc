@@ -1,44 +1,25 @@
-// https://github.com/sstadick/gzp/
 
-
-
-
-//use itertools::Itertools;
 use log::{error, debug}; //, info, trace, warn
-//use std::collections::HashMap;
-//use std::io::{Write, Read, Seek};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::PathBuf;
 use std::process;
+use std::error::Error;
+use std::io::{BufWriter, Write};
 
-//use flate2::Compression;
-//use flate2::write::GzEncoder;
 use seq_io::fastq::Record as FastqRecord;
 use seq_io::fastq::Reader as FastqReader;
-//use serde::{Serialize, Deserialize};
-
 use niffler::get_reader;
-
-use std::error::Error;
 use csv::ReaderBuilder;
-use std::collections::HashSet;
-
-
-// use flate2::write::GzEncoder;
-// use flate2::Compression;
-
-use std::io::Write;
-
-
+use clap::{Parser, Subcommand};
 use gzp::{deflate::Gzip, par::compress::{ParCompress, ParCompressBuilder}, ZWriter};
+use env_logger::{Builder, Env};
+
 
 //////////////////////////////////////////
 ////////////////////////////////////////// Basic whitelist correction
 //////////////////////////////////////////
-
-
-
-
 
 pub struct BarcodeWhitelist {
     list: Vec<String>,    //List for alignment; not sure if worth having separate from set
@@ -184,9 +165,8 @@ fn extract_bc_optimistic_atrandi(read_r1:&str) -> Result<(String,String,String,S
 
 
 //////////////////////////////////////////
-////////////////////////////////////////// /// Copied from babbles
+////////////////////////////////////////// /// Copied from babbles ; fastq reading
 //////////////////////////////////////////
-
 
 
 pub fn open_fastq(file_handle: &PathBuf) -> FastqReader<Box<dyn std::io::Read>> {
@@ -211,8 +191,10 @@ pub fn open_fastq(file_handle: &PathBuf) -> FastqReader<Box<dyn std::io::Read>> 
     fastq
 }
 
+
+
 //////////////////////////////////////////
-////////////////////////////////////////// main
+////////////////////////////////////////// Parse BC to fastq
 //////////////////////////////////////////
 
 /* 
@@ -236,21 +218,25 @@ fn write_fastq(parz: &mut ParCompress<Gzip>, readname:&[u8], seq:&[u8], qual:&[u
 }
 
 
-fn main() {
+
+
+
+fn parse_to_fastq(
+    path_in_r1:&PathBuf,
+    path_in_r2:&PathBuf,
+    path_out_r1:&PathBuf,
+    path_out_r2:&PathBuf,
+    histogram_file:&PathBuf
+) {
+
     println!("reading whitelist ");
     let atrandi_barcodes = AtrandiBarcodes::read_atrandi_barcodes("bc.csv").expect("Failed to read barcode file");
 
-
     /////////// Set up input
-    let path_r1 = PathBuf::from(r"/Users/mahogny/Downloads/joram/Joram-singlecell-2nd_S1_L001_R1_001.fastq.gz");
-    let path_r2 = PathBuf::from(r"/Users/mahogny/Downloads/joram/Joram-singlecell-2nd_S1_L001_R2_001.fastq.gz");
-    let mut f_r1 = open_fastq(&path_r1);
-    let mut f_r2 = open_fastq(&path_r2);
+    let mut f_r1 = open_fastq(&path_in_r1);
+    let mut f_r2 = open_fastq(&path_in_r2);
 
     /////////// Set up output
-    let path_out_r1 = PathBuf::from(r"/Users/mahogny/Downloads/joram/rustout_R1.fastq.gz");
-    let path_out_r2 = PathBuf::from(r"/Users/mahogny/Downloads/joram/rustout_R2.fastq.gz");
-
     let output_r1 = File::create(path_out_r1).expect("creation of R1 failed");
     let output_r2 = File::create(path_out_r2).expect("creation of R2 failed");
 
@@ -258,14 +244,17 @@ fn main() {
     let mut parz_r2: ParCompress<Gzip> = ParCompressBuilder::new().from_writer(output_r2);
 
 
+    let mut barcode_per_cell_count = HashMap::new();
+
+
     /////////// Handle all reads
     let mut read_count = 0;
     while let Some(record_r1) = f_r1.next() {
 
+        read_count = read_count + 1;
         if read_count%100000 == 0 {
             println!("Processed reads: {}", read_count);
         }
-        read_count = read_count + 1;
 
 
         //let record_r1 = f_r1.next().expect("No r1");
@@ -275,16 +264,23 @@ fn main() {
         let record_r1: seq_io::fastq::RefRecord = record_r1.expect("Error reading record");
         let record_r2: seq_io::fastq::RefRecord = record_r2.expect("Error reading record");
     
-
-        //let seq_r1=String::from_utf8_lossy(record_r1.seq());
         let seq_r2=String::from_utf8_lossy(record_r2.seq());
-
         let bc = atrandi_barcodes.get_correct_bc_from_read(&seq_r2);
 
         match bc {
             Ok(bc) => {
 
                 let concat_bc = format!("{}.{}.{}.{}",bc.0,bc.1,bc.2,bc.3);
+
+                //Count barcodes
+                match barcode_per_cell_count.get(&concat_bc) {
+                    Some(cnt) => {
+                        barcode_per_cell_count.insert(concat_bc.clone(), cnt+1);
+                    },
+                    None => {
+                        barcode_per_cell_count.insert(concat_bc.clone(), 1);
+                    }
+                }
 
                 //Typical FASTQ record
                 //@M03699:228:000000000-LCH6K:1:1102:12164:1000 1:N:0:CAGGTT
@@ -301,7 +297,7 @@ fn main() {
                     record_r1.qual()
                 );
 
-                //For Read 2, we will chop off the BC part
+                //For Read 2, we will chop off the BC part. Update name
                 let new_r2_name = format!("{}_{}",&concat_bc, record_r2.id().unwrap());
 
                 let from: usize = 36+8;
@@ -324,46 +320,91 @@ fn main() {
         };
     }
 
-
-//        parz_r1.finish();
     parz_r1.finish().unwrap();
     parz_r2.finish().unwrap();
 
 
+    ////// Write barcode histogram
+    let output_h = File::create(histogram_file).expect("creation of R1 failed");
+    let mut writer_h = BufWriter::new(output_h);
+    writer_h.write_all("barcode\tcount\n".as_bytes()).expect("Unable to write data");
+    for (bc, cnt) in &barcode_per_cell_count {
+        let toprint = format!("{}\t{}\n", bc, cnt);
+        writer_h.write_all(toprint.as_bytes()).expect("Unable to write data");
+    }
 
 
-
-        //All BCs in r2
-        //println!("{:?} {:?}", bc1,bc2);
-        //println!("{:?} {:?}", record_r1.seq(), record_r2.seq());
-
-        //TODO trim reads first for now
-
-        //As name of read, use BC_orig?
-
-
-        
-
-        //A00689:440:HNTNGDRXY:2:2142:24822:22091 16      chr1    10285   255     60M170360N18M12S        *       0       0       TAACCCTAACCCCAACCCCAACCCCAACCCCAACCCCAACCCTAACCCCTAACCCCTAACCCTACCCTCACCCTCACCGCATGAGCAATG      FFFFFFFF::FF:F::F::FFFFFFF:F:FFFFFFFFFFFFFFFFFFF::FFFFFFFFFFFFF:FFF:FFFFFFF:FFFFFFFFFFF:FF NH:i:1  HI:i:1  AS:i:58 nM:i:8  RG:Z:lib6:0:1:HNTNGDRXY:2       RE:A:I  xf:i:0  CR:Z:CTCCTGAGTTAGAGCC   CY:Z:FFFFFFFFFFFFFFFF   CB:Z:CTCCTGAGTTAGAGCC-1 UR:Z:ATAATATACTGC  UY:Z:FFFFFFFFFFFF       UB:Z:ATAATATACTGC
-
-
-
-
-
-
-
-
-/* 
-    bcread_D <- str_sub(bcread,1,8)
-bcread_C <- str_sub(bcread,1+8+4,8+8+4)
-bcread_B <- str_sub(bcread,1+8+4+8+4,8+8+4+8+4) 
-bcread_A <- str_sub(bcread,1+8+4+8+4+8+4,8+8+4+8+4+8+4)
-*/
 
     println!("done");
 
+}
 
 
+
+
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////// CLI parser ////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]  // reads from Cargo.toml
+struct Cli {
+    /// print debug info
+    #[arg(short, long, default_value_t = false, global = true)]
+    debug: bool,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Identify BC, make fastq
+    ToFastq {
+        /// forward reads
+        #[arg(long)]
+        i1: PathBuf,
+        /// reverse reads
+        #[arg(long)]
+        i2: PathBuf,
+
+        /// forward reads
+        #[arg(long)]
+        o1: PathBuf,
+        /// reverse reads
+        #[arg(long)]
+        o2: PathBuf,
+
+        /// histogram output
+        #[arg(long)]
+        h: PathBuf
+
+    }    
+}
+
+
+fn main() {
+
+    let cli = Cli::parse();
+    let level = if cli.debug { "debug" } else { "info" };
+    Builder::from_env(Env::default().default_filter_or(level)).init();
+
+    match &cli.command {
+        Some(Commands::ToFastq { i1, i2, o1, o2, h}) => {
+            parse_to_fastq(
+                &i1, &i2, 
+                &o1, &o2,
+                &h
+            );
+        }
+        None => {}
+    }
 
 
 
