@@ -351,9 +351,7 @@ fn parse_to_fastq(
 
 fn bam_to_counttable(ibam:&PathBuf, path_csv:&PathBuf) {
 
-//    let mut barcode_per_cell_count = HashMap::new();
-
-    let mut barcode_per_cell_count: HashMap<String, HashMap<String,i32>> = HashMap::new();
+    let mut barcode_per_cell_count: HashMap<String, HashMap<usize,i32>> = HashMap::new();
 
 
     use noodles::bam;
@@ -366,9 +364,14 @@ fn bam_to_counttable(ibam:&PathBuf, path_csv:&PathBuf) {
 
     //Set up a list of features
     let allind: Vec<usize> = (0..header.reference_sequences().len()).collect();
-    let name_of_features = allind.iter().map(|i| header.reference_sequences().get_index(*i).expect("!").0.to_string()).collect_vec();
+    let mut name_of_features = allind.iter().map(|i| header.reference_sequences().get_index(*i).expect("!").0.to_string()).collect_vec();
+    let id_noname = name_of_features.len();
+    name_of_features.push("*".to_string());
+    println!("Names of features:");
+    println!("{:?}", name_of_features);
 
     //Perform all the counting
+    println!("Counting...");
     for result in reader.records() {
         let record = result.expect("Could not read BAM record");
 
@@ -377,24 +380,16 @@ fn bam_to_counttable(ibam:&PathBuf, path_csv:&PathBuf) {
         let name = record.name().unwrap().to_str_lossy();
         let (bc,_) = name.split_once('_').expect("BAM record name does not follow convention");
 
-        //Get position ; currently a feature_name. replace with ID as cheaper!
+        //Figure out which feature. Need to map <no chromosome>
         let seqid = record.reference_sequence_id();
-
         let feature_name = match seqid {
             Some(seqid) => {
-                let feature_name = header.reference_sequences().get_index(seqid.expect("huh")).expect("bad ref").0.to_str_lossy();
-                String::from(feature_name)
+                seqid.expect("huh")
             },
             None => {
-                println!("here");
-                String::from("")
+                id_noname
             }
         };
-
-
-        //println!("{:?}",header.reference_sequences().get_index(seqid));
-
-        //println!("{}",bc);
 
         //Update count in table.
         barcode_per_cell_count.entry(bc.to_string())
@@ -410,11 +405,15 @@ fn bam_to_counttable(ibam:&PathBuf, path_csv:&PathBuf) {
     }
 
 
-    println!("{:?}", barcode_per_cell_count);
+    //println!("{:?}", barcode_per_cell_count);
 
 
 
-    store_counttable(path_csv, name_of_features);
+    store_counttable(
+        path_csv, 
+        barcode_per_cell_count, 
+        name_of_features
+    ).expect("Failed to store count table");
 
 }
 

@@ -1,5 +1,5 @@
 count:
-	cargo run -- bam-to-count --ibam /Users/mahogny/Downloads/sorted.bam --out /Users/mahogny/Downloads/sorted.csv
+	cargo run -- bam-to-count --ibam /Users/mahogny/Downloads/sorted.bam --out /Users/mahogny/Downloads/sorted
 
 run:
 	cargo run -- to-fastq \
