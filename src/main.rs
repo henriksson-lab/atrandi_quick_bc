@@ -124,7 +124,7 @@ impl AtrandiBarcodes {
 
 
     ///Extract barcode from read
-    fn get_correct_bc_from_read(&self, bc_read:&str) -> Option<(String,String,String,String)> {
+    fn get_correct_bc_from_read(&self, bc_read:&str, print_debug:bool) -> Option<(String,String,String,String)> {
 
         //Extract each BC
         //let template_bc = br"********AGGA********ACTC********AAGG********T"; 
@@ -134,13 +134,13 @@ impl AtrandiBarcodes {
 
         //Note swap here of BCs to match logical order in chemistry. Barcode added last is the first one seen in the read
         let corrected_bc = (
-            self.rounds[0].correct_to_whitelist(&barcode_tuple.0)?,
+            self.rounds[0].correct_to_whitelist(&barcode_tuple.0)?, //test this first as it is the most likely to fail
             self.rounds[1].correct_to_whitelist(&barcode_tuple.1)?,
             self.rounds[2].correct_to_whitelist(&barcode_tuple.2)?,
             self.rounds[3].correct_to_whitelist(&barcode_tuple.3)?
         );
     
-        if false {
+        if print_debug {
             println!("{}.{}.{}.{} in", barcode_tuple.0, barcode_tuple.1, barcode_tuple.2, barcode_tuple.3);
             println!("{}.{}.{}.{} out", corrected_bc.0.0,corrected_bc.1.0,corrected_bc.2.0,corrected_bc.3.0);
             println!("");  
@@ -251,6 +251,8 @@ fn parse_to_fastq(
     histogram_file:&PathBuf
 ) {
 
+    let print_debug = false;
+
     println!("reading whitelist ");
     let atrandi_barcodes = AtrandiBarcodes::read_atrandi_barcodes("bc.csv").expect("Failed to read barcode file");
 
@@ -271,11 +273,12 @@ fn parse_to_fastq(
 
     /////////// Handle all reads
     let mut read_count = 0;
+    let mut count_ok_reads = 0;
     while let Some(record_r1) = f_r1.next() {
 
         read_count = read_count + 1;
         if read_count%100000 == 0 {
-            println!("Processed reads: {}", read_count);
+            println!("Processed reads: {}   Ok reads: {}   fraction: {}", read_count, count_ok_reads, count_ok_reads as f64/read_count as f64);
         }
 
         if read_count == 50000000  {
@@ -290,10 +293,11 @@ fn parse_to_fastq(
         let record_r2: seq_io::fastq::RefRecord = record_r2.expect("Error reading record");
     
         let seq_r2=String::from_utf8_lossy(record_r2.seq());
-        let bc = atrandi_barcodes.get_correct_bc_from_read(&seq_r2);
+        let bc = atrandi_barcodes.get_correct_bc_from_read(&seq_r2, print_debug);
 
         match bc {
             Some(bc) => {
+                count_ok_reads = count_ok_reads + 1;
 
                 let concat_bc = format!("{}.{}.{}.{}",bc.0,bc.1,bc.2,bc.3);
 
@@ -314,7 +318,7 @@ fn parse_to_fastq(
                 //#8B<CFDGGGFGGFGGFGGGGGGGGGFGCGFFGGGGGDGFDEGGGGGGGGGGGCGCEGGGGGGGGGGGEFGGFGG
 
 
-                //Read 1 is just passed through; just change the name
+                //Read 1 is the same. Update name to include BC
                 let new_r1_name = format!("{}_{}",&concat_bc, record_r1.id().unwrap());
                 write_fastq(&mut parz_r1, 
                     new_r1_name.as_bytes(),
@@ -322,7 +326,7 @@ fn parse_to_fastq(
                     record_r1.qual()
                 );
 
-                //For Read 2, we will chop off the BC part. Update name
+                //For Read 2, we will chop off the BC part. Update name to include BC
                 let new_r2_name = format!("{}_{}",&concat_bc, record_r2.id().unwrap());
 
                 let from: usize = 36+8;
@@ -373,7 +377,7 @@ fn parse_to_fastq(
 
 
 
-fn bam_to_counttable(ibam:&PathBuf, path_csv:&PathBuf) {
+fn count_seq_per_bc(ibam:&PathBuf, path_csv:&PathBuf) {
 
     let mut barcode_per_cell_count: HashMap<String, HashMap<usize,i32>> = HashMap::new();
 
@@ -485,7 +489,7 @@ enum Commands {
         h: PathBuf
 
     },
-    BamToCount {
+    CountSeq {
         /// Bam input file
         #[arg(short,long)]
         ibam: PathBuf,
@@ -511,8 +515,8 @@ fn main() {
                 &h
             );
         }
-        Some(Commands::BamToCount { ibam, out}) => {
-            bam_to_counttable(
+        Some(Commands::CountSeq { ibam, out}) => {
+            count_seq_per_bc(
                 &ibam, &out
             );
         }
