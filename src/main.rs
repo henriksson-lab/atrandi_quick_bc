@@ -280,6 +280,7 @@ fn parse_to_fastq(
 
         if read_count == 50000000  {
             println!("done early");
+            break;
         }
 
 
