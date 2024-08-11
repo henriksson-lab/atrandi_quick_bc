@@ -419,14 +419,21 @@ fn count_seq_per_bc(ibam:&PathBuf, path_csv:&PathBuf) {
             }
         };
 
-        //Update count in table.
+        //Update count in table
         barcode_per_cell_count.entry(bc.to_string())
         .and_modify(|cellmap| { 
-             (*cellmap).insert(feature_name.clone(), 1);
+
+            (*cellmap).entry(feature_name)
+            .and_modify(|x| *x += 1)
+            .or_insert(1);
+
+
+            // (*cellmap).insert(feature_name, 1);          //Fail. not updating. TODO
+
         })
         .or_insert({
             let mut cellmap = HashMap::new();
-            cellmap.insert(feature_name.clone(), 1);
+            cellmap.insert(feature_name, 1);
             cellmap
         });
         
