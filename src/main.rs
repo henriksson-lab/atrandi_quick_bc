@@ -32,7 +32,7 @@ impl BarcodeWhitelist {
 
 
     /// Compare to each BC, see which fits best --- each base that matches give 1p, other 0p
-    fn closest_bc_basewise(&self, bc_to_match: &String) -> String {
+    fn closest_bc_basewise(&self, bc_to_match: &String) -> Option<(String,i32)> {
         let mut best_bc = &self.list[0];
         let mut best_bc_score = num_similar_elements(bc_to_match.as_bytes(), best_bc.as_bytes());
         for j in 1..self.list.len() {
@@ -43,24 +43,31 @@ impl BarcodeWhitelist {
             }
         }
         //println!("best bc basewise {}",best_bc.to_string());
-        return best_bc.to_string();
+
+        return Some((best_bc.to_string(),best_bc_score));
     }
 
     /// Correct barcode using whitelist
-    fn correct_to_whitelist(&self, bc_to_match: &String) -> String {  /////////// do Result instead?
+    fn correct_to_whitelist(&self, bc_to_match: &String) -> Option<(String,i32)> { 
         if bc_to_match.len()==0 {
             //Empty barcode
-            return "".to_string();
+            return None;
         } else if self.set.contains(bc_to_match) {
             //See if there is a trivial match
             //println!("trivial match");
-            return bc_to_match.to_string();
+            return Some((bc_to_match.to_string(),8));
         } else if self.bc_length==bc_to_match.len() {
-            //Compare each base if same length
-            return self.closest_bc_basewise(bc_to_match);
+            //Compare each base if same length. Set a minimum cutoff
+            let m = self.closest_bc_basewise(bc_to_match)?;
+            if m.1 >=6 {
+                return Some(m);
+            } else {
+                return None;
+            }
+
         } else {
             //Fail
-            return "".to_string();
+            return None;
         }
     }
 
@@ -116,37 +123,51 @@ impl AtrandiBarcodes {
     }
 
 
-    /// Take read R1, return correct barcode
-    fn get_correct_bc_from_read(&self, read_r1:&str) -> Result<(String,String,String,String),()> {
+    ///Extract barcode from read
+    fn get_correct_bc_from_read(&self, bc_read:&str) -> Option<(String,String,String,String)> {
 
         //Extract each BC
         //let template_bc = br"********AGGA********ACTC********AAGG********T"; 
         //let barcode_tuple = extract_bc_by_alignment(template_bc, read_r1.as_bytes(), false);  
 
-        let barcode_tuple = extract_bc_optimistic_atrandi(read_r1)?;
+        let barcode_tuple = extract_bc_optimistic_atrandi(bc_read)?;
 
-        //Note swap here of BCs to match logical order in chemistry. Barcode added last is the first one seen in R1
-        let corrected_bc1 = self.rounds[0].correct_to_whitelist(&barcode_tuple.3);
-        let corrected_bc2 = self.rounds[1].correct_to_whitelist(&barcode_tuple.2);
-        let corrected_bc3 = self.rounds[2].correct_to_whitelist(&barcode_tuple.1);
-        let corrected_bc4 = self.rounds[3].correct_to_whitelist(&barcode_tuple.0);
+        //Note swap here of BCs to match logical order in chemistry. Barcode added last is the first one seen in the read
+        let corrected_bc = (
+            self.rounds[0].correct_to_whitelist(&barcode_tuple.0)?,
+            self.rounds[1].correct_to_whitelist(&barcode_tuple.1)?,
+            self.rounds[2].correct_to_whitelist(&barcode_tuple.2)?,
+            self.rounds[3].correct_to_whitelist(&barcode_tuple.3)?
+        );
     
-        return Ok((corrected_bc1,corrected_bc2,corrected_bc3,corrected_bc4));
+        if false {
+            println!("{}.{}.{}.{} in", barcode_tuple.0, barcode_tuple.1, barcode_tuple.2, barcode_tuple.3);
+            println!("{}.{}.{}.{} out", corrected_bc.0.0,corrected_bc.1.0,corrected_bc.2.0,corrected_bc.3.0);
+            println!("");  
+        }
+
+        //Add a global BC quality constraint
+        let total_m = corrected_bc.0.1 + corrected_bc.1.1 + corrected_bc.2.1 + corrected_bc.3.1;
+        if total_m > 7*4 {
+            return Some((corrected_bc.0.0, corrected_bc.1.0, corrected_bc.2.0, corrected_bc.3.0));
+        } else {
+            return None;
+        }
     }
 
 }
 
 
-fn extract_bc_optimistic_atrandi(read_r1:&str) -> Result<(String,String,String,String),()> {
+fn extract_bc_optimistic_atrandi(bc_read:&str) -> Option<(String,String,String,String)> {
 
-    if read_r1.len() > 36+8 {
-        let barcode_1 = &read_r1[0..(0+8)];
-        let barcode_2 = &read_r1[(12+0)..(12+8)];
-        let barcode_3 = &read_r1[(24+0)..(24+8)];
-        let barcode_4 = &read_r1[(36+0)..(36+8)];
-        return Ok((barcode_1.to_string(),barcode_2.to_string(),barcode_3.to_string(),barcode_4.to_string()))
+    if bc_read.len() > 36+8 {
+        let barcode_4 = &bc_read[(0 +0)..(0+8)];
+        let barcode_3 = &bc_read[(12+0)..(12+8)];
+        let barcode_2 = &bc_read[(24+0)..(24+8)];
+        let barcode_1 = &bc_read[(36+0)..(36+8)];
+        return Some((barcode_1.to_string(),barcode_2.to_string(),barcode_3.to_string(),barcode_4.to_string()))
     } else {
-        return Err(());
+        return None;
     }
 }
 
@@ -257,10 +278,12 @@ fn parse_to_fastq(
             println!("Processed reads: {}", read_count);
         }
 
+        if read_count == 50000000  {
+            println!("done early");
+        }
 
-        //let record_r1 = f_r1.next().expect("No r1");
+
         let record_r2 = f_r2.next().expect("No r2");
-        
 
         let record_r1: seq_io::fastq::RefRecord = record_r1.expect("Error reading record");
         let record_r2: seq_io::fastq::RefRecord = record_r2.expect("Error reading record");
@@ -269,7 +292,7 @@ fn parse_to_fastq(
         let bc = atrandi_barcodes.get_correct_bc_from_read(&seq_r2);
 
         match bc {
-            Ok(bc) => {
+            Some(bc) => {
 
                 let concat_bc = format!("{}.{}.{}.{}",bc.0,bc.1,bc.2,bc.3);
 
@@ -315,7 +338,7 @@ fn parse_to_fastq(
 
 
             },
-            Err(_) => {
+            None => {
                 //println!("Cannot tell BC");
             }
         };
